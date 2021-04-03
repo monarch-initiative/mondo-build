@@ -131,7 +131,7 @@ all_artefacts: all_reports $(ARTEFACTS)
 
 #all: test all_imports all_reports all_equivalencies all_subsets imports/equivalencies.obo $(ONT).owl $(ONT).obo $(ONT).json pre/$(ONT).owl pre/$(ONT).obo pre/$(ONT).json extid/$(ONT).owl extid/$(ONT).obo extid/$(ONT).json $(ONT)-merged.owl
 
-test: sparql_test_edit roundtrip.obo debug.owl mondo-edit.owl sparql_test_main_obo test_nomerge
+test: sparql_test_edit roundtrip.obo debug.owl mondo-edit.owl sparql_test_main_obo test_nomerge reasoned-plus-equivalents.owl
 
 
 # ----------------------------------------
@@ -205,13 +205,17 @@ filtered.owl: filtered.obo skos.ttl
 # PREVIOUS: SKIP FOR NOW: assume pre-asserted, but run reasoner to check
 # note: robot will protect redundant annotated axioms
 reasoned.owl: filtered.owl 
-	$(ROBOT) reason -T true -x true -X true -i $< -r ELK relax reduce -p false -r ELK $(ANN) -o $@
+	$(ROBOT) reason --equivalent-classes-allowed none --exclude-owl-thing true --exclude-duplicate-axioms true --exclude-external-entities true -i $< -r ELK relax reduce --preserve-annotated-axioms false -r ELK $(ANN) -o $@
+
+TMPDIR=tmp
 
 # merged = reasoned + equivalencies
 reasoned-plus-equivalents.owl: reasoned.owl imports/equivalencies.owl
 	owltools --use-catalog $^ --merge-support-ontologies -o $@
+	$(ROBOT) reason -i $@ --equivalent-classes-allowed asserted-only -o $(TMPDIR)/$@_test_equivalents.owl
 
-
+ttt:
+	$(ROBOT) reason -i reasoned-plus-equivalents.owl --equivalent-classes-allowed asserted-only -o $(TMPDIR)/$@_test_equivalents.owl
 
 # PRE-RELEASES: MONDO IDs primary
 #
