@@ -276,6 +276,31 @@ reports/mondo_unsats.md: mondo.obo
 .PHONY: mondo_feature_diff
 mondo_feature_diff: reports/robot_diff.md reports/mondo_unsats.md
 
+
+EDIT_GITHUB_MASTER=https://raw.githubusercontent.com/monarch-initiative/mondo/master/src/ontology/mondo-edit.obo
+
+tmp/src-noimports.owl: $(SRC)
+	$(ROBOT) remove -i $< --select imports -o $@
+
+tmp/src-imports.owl: $(SRC)
+	$(ROBOT) merge -i $< -o $@
+
+tmp/src-master-noimports.owl:
+	$(ROBOT) remove -I $(EDIT_GITHUB_MASTER) --select imports -o $@
+
+tmp/src-master-imports.owl:
+	$(ROBOT) merge -I $(EDIT_GITHUB_MASTER) -o $@
+
+reports/diff_edit_%.md: tmp/src-master-%.owl tmp/src-%.owl
+	$(ROBOT) diff --left tmp/src-master-$*.owl --right tmp/src-$*.owl -f markdown -o $@
+
+reports/diff_edit_%.txt: tmp/src-master-%.owl tmp/src-%.owl
+	$(ROBOT) diff --left tmp/src-master-$*.owl --right tmp/src-$*.owl -o $@
+
+branch_diffs: reports/diff_edit_imports.md reports/diff_edit_noimports.md reports/diff_edit_imports.txt reports/diff_edit_noimports.txt
+
+
+
 .PHONY: mondo_feature_diff
 related_annos_to_exact:
 	$(ROBOT) query --use-graphs false -i $(SRC) --update $(SPARQLDIR)/related-exact-synonym-annotations.ru -o $(SRC)
@@ -400,3 +425,71 @@ test: mondo_edit_report
 
 open_%_report: 
 	open reports/mondo-$*-report.html
+
+##################################
+### Mondo/NCIT Cancer Module #####
+##################################
+
+# The cancer Module of Mondo corresponds to Mondo.owl
+# together with NCIT neoplasms where they are more specific
+# compared to what Mondo covers
+
+
+
+# To make computation (SPARQL etc) faster, we first extract the neoplasm subset from Mondo
+
+mirror/ncit.owl:
+	echo "$@: Skipping NCIT"
+
+tmp/ncit-neoplasm.owl: mirror/ncit.owl
+	echo "Skipping dependencies, need some fixing #3136" &&\
+	$(ROBOT) reason -i mirror/ncit.owl filter --term NCIT:C3262 --select "self descendants" --trim false -o $@
+
+tmp/mondo-neoplasm.owl: tmp/ncit-neoplasm.owl tmp/materialise-equivalence.csv #mondo.owl
+	$(ROBOT) template --merge-before --input mondo.owl --template tmp/materialise-equivalence.csv \
+		merge -i $< remove --axioms disjoint reason filter --term MONDO:0005070 --select descendants --trim false -o $@
+
+# This gets you all the Mondo classes equivalent to some NCIT class 
+# that do not have a further NCIT class being a child of it
+tmp/mondo-ncit-neoplasm-roots.csv: tmp/mondo-neoplasm.owl
+	$(ROBOT) query -i $< --query $(SPARQLDIR)/signature/ncit-neoplasm-mondo-roots.sparql $@
+	sed -i '/^NCIT:C8748,/d' $@
+	sed -i '/^NCIT:C4752,/d' $@
+
+# This takes the neoplasm branch of NCIT (reasoned, just to be sure),
+# Identifies the classes corresponding to the most specific Mondo classes And
+# renaming them, and then chopping off everything from above
+# In effect, you should have a layer of Mondo classes, and underneath
+# Some specific neoplasms not covered by Mondo.
+tmp/ncit-neoplasm-under-mondo.owl: tmp/mondo-ncit-neoplasm-roots.csv tmp/ncit-neoplasm.owl
+	echo "Skipping dependencies, need some fixing #3136" &&\
+	$(ROBOT) rename -i tmp/ncit-neoplasm.owl --mappings tmp/mondo-ncit-neoplasm-roots.csv --allow-missing-entities true \
+	filter --select "<http://purl.obolibrary.org/obo/MONDO_*>" --select "self descendants" --select "annotations" \
+	remove --select "<http://purl.obolibrary.org/obo/MONDO_*>" --axioms annotation remove --axioms Declaration -o $@
+.PRECIOUS: tmp/ncit-neoplasm-under-mondo.owl
+
+tmp/verify-%.txt: tmp/ncit-neoplasm-under-mondo.owl
+	$(ROBOT) verify -i $< --queries $(SPARQLDIR)/unittest/$*.sparql --output-dir tmp/
+
+# Finally in the release, mondo.owl is merged with the ncit-neoplasm module to 
+# form the desired mondo-ncit.owl module
+$(ONT)-ncit.owl: tmp/ncit-neoplasm-under-mondo.owl tmp/verify-ncit-cancer.txt tmp/verify-mondo-ncit-illegalsubs.txt #mondo.owl
+	$(ROBOT) merge -i mondo.owl -i tmp/ncit-neoplasm-under-mondo.owl -o $@
+
+#TODO E. [optional] subset this, including only subclasses of Neoplasm or susceptibility to Neoplasm [e.g. to include Lynch]
+
+### Part of a template based pipeline that allows querying something into a ROBOT template and then
+## injecting it into the edit file
+
+tmp/materialise-subclass.csv: tmp/ncit-neoplasm-under-mondo.owl
+	$(ROBOT) query -i $< --query $(SPARQLDIR)/unittest/mondo-ncit-illegalsubs.sparql $@
+	sed -i '2iID,SC %' $@
+
+tmp/materialise-equivalence.csv: $(SRC)
+	$(ROBOT) query -i $< --query $(SPARQLDIR)/reports/mondo-ncit.sparql $@
+	sed -i '2iID,EC %' $@
+
+merge_template_%: tmp/%.csv
+	$(ROBOT) template --merge-before --input $(SRC) \
+ --template $< --output $(SRC).obo && mv $(SRC).obo $(SRC)
+
